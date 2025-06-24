@@ -23,14 +23,21 @@ bool PRES = false;
 bool MSG_IN = false;  
 bool OPEN = false;        
 bool EMPTY = false;        
+bool AGUARDANDO_PAGAMENTO = false;
+bool PAGAMENTO_CONFIRMADO = false;
+
+// Tickets
+String tickets[10];
+int ticketCount = 0;
+String ticketAtual = "";
 
 // Protótipos
 void MED();
 void CLOSE();
 void BTN();
 void CHC_PRES();
-
-
+String gerarID();
+void verificarPagamento();
 
 void setup() {
   Serial.begin(9600);
@@ -49,6 +56,11 @@ void loop(){
   MED();
   CHC_PRES();
 
+  // Verifica entrada de pagamento via Serial
+  if (AGUARDANDO_PAGAMENTO && Serial.available()) {
+    verificarPagamento();
+  }
+
   // Estado inicial aguardando
   if (!MSG_IN && BTN_STATE == 0 && !PRES) {
     Serial.println("Aguardando veículo e botão...");
@@ -65,33 +77,47 @@ void loop(){
     return; 
   }
 
-  // Impressão e abertura
-  if (BTN_STATE == 1 && PRES && !OPEN) {
-    Serial.println("Botão pressionado. Imprimindo ticket e abrindo cancela...");
-    TIME_ST = millis();
-    delay(3000); 
-    digitalWrite(LED_R, LOW);
-    digitalWrite(LED_G, HIGH);
-    OPEN = true;
+  // Impressão de ticket
+  if (BTN_STATE == 1 && PRES && !OPEN && !AGUARDANDO_PAGAMENTO && !PAGAMENTO_CONFIRMADO) {
+    ticketAtual = gerarID();
+    if (ticketCount < 10) {
+      tickets[ticketCount++] = ticketAtual;
+    }
+
+    Serial.println("Botão pressionado. Imprimindo ticket...");
+    Serial.print("Ticket gerado: ");
+    Serial.println(ticketAtual);
+    Serial.println("Digite esse ID no Serial Monitor após pagamento.");
+
+    AGUARDANDO_PAGAMENTO = true;
+    BTN_STATE = 0;
     return;
   }
 
-  // Tempo excedido
-  if (BTN_STATE == 1 && millis() - TIME_ST >= 30000) {
+  // Tentativa de abrir sem pagar
+  if (BTN_STATE == 1 && PRES && AGUARDANDO_PAGAMENTO && !PAGAMENTO_CONFIRMADO && !OPEN) {
+    Serial.println("Pagamento pendente. Cancela não pode ser aberta.");
+    BTN_STATE = 0;
+    return;
+  }
+
+  // Tempo limite de cancela aberta
+  if (OPEN && millis() - TIME_ST >= 30000) {
     Serial.println("Tempo limite excedido. Fechando cancela.");
     CLOSE();
     return;
   }
 
   // Veículo saiu
-  if (BTN_STATE == 1 && !PRES && !EMPTY) {
-    Serial.println("Veículo saiu. Fechando cancela.");
+  if (OPEN && !PRES && !EMPTY) {
+    Serial.println("Veículo saiu. Fechando cancela em 3 segundos...");
+    delay(3000);
     CLOSE();
     return;
   }
 }
 
-// Leitura do sensor de entrada
+// Leitura do sensor ultrassônico
 void MED() {
   if (millis() - LAST_MED >= INT_MED) {
     LAST_MED = millis();
@@ -107,7 +133,7 @@ void MED() {
   }
 }
 
-// Fecha cancela e reseta estado
+// Fecha cancela e reseta variáveis
 void CLOSE() {
   digitalWrite(LED_R, HIGH);
   digitalWrite(LED_G, LOW);
@@ -116,6 +142,9 @@ void CLOSE() {
   MSG_IN = false;
   OPEN = false;
   EMPTY = false;
+  AGUARDANDO_PAGAMENTO = false;
+  PAGAMENTO_CONFIRMADO = false;
+  ticketAtual = "";
   Serial.println("Cancela fechada.");
 }
 
@@ -124,9 +153,9 @@ void BTN() {
   if (digitalRead(BTN_PIN) == HIGH && BTN_STATE == 0) {
     delay(500);
     if(digitalRead(BTN_PIN) == LOW){
-    BTN_STATE = 1; 
+      BTN_STATE = 1; 
+    }
   }
-}
 }
 
 // Atualiza presença de veículo
@@ -135,10 +164,41 @@ void CHC_PRES() {
     PRES = true;
     MSG_IN = false;
     BTN_STATE = 0; 
-    Serial.println("Veículo detectado na entrada, aperte o botão para abrir a cancela.");
+    Serial.println("Veículo detectado na entrada.");
+
+    // Somente abre se já tiver pago
+    if (PAGAMENTO_CONFIRMADO && !OPEN) {
+      Serial.println("Pagamento verificado. Abrindo cancela.");
+      digitalWrite(LED_R, LOW);
+      digitalWrite(LED_G, HIGH);
+      OPEN = true;
+      TIME_ST = millis();
+    }
+
   } else if (DIS > 15 && PRES) {
     PRES = false;
-    Serial.println("Veículo saiu da entrada, fechando cancela.");
-  CLOSE();
+    Serial.println("Veículo saiu da entrada.");
   }
+}
+
+// Geração de ID único simples
+String gerarID() {
+  return "TCK" + String(millis() % 100000);
+}
+
+// Verifica pagamento pelo Serial Monitor
+void verificarPagamento() {
+  String entrada = Serial.readStringUntil('\n');
+  entrada.trim();
+
+  for (int i = 0; i < ticketCount; i++) {
+    if (tickets[i] == entrada) {
+      Serial.println("Pagamento confirmado! Aguarde aproximação do veículo para abrir a cancela.");
+      PAGAMENTO_CONFIRMADO = true;
+      AGUARDANDO_PAGAMENTO = false;
+      return;
+    }
+  }
+
+  Serial.println("ID inválido. Ticket não reconhecido.");
 }
